@@ -28,14 +28,39 @@ impl AuthorizedKey {
             return None;
         }
 
-        let mut parts = key.split_whitespace();
-        let Some(alg) = parts.next() else {
-            debug!("missing algorithm");
-            return None;
+        // Split at the first unquoted whitespace -- the first field is options or key type
+        // (ported from OpenSSH's sshkey_advance_past_options()).
+        let mut rest = key.as_bytes();
+        let mut quoted = false;
+        loop {
+            rest = match rest {
+                [b' ' | b'\t', ..] if !quoted => break,
+                [b'\\', b'"', next @ ..] => next, // skip both
+                [b'"', next @ ..] => {
+                    quoted = !quoted;
+                    next
+                }
+                [_, next @ ..] => next,
+                [] if quoted => {
+                    debug!("unterminated quote in key options");
+                    return None;
+                }
+                [] => break,
+            };
+        }
+        // Avoid str::from_utf8(rest).unwrap()
+        let (first, rest) = key.split_at(key.len() - rest.len());
+        let (algorithm, rest) = match PublicKeyAlgorithm::typed(first) {
+            PublicKeyAlgorithm::Unknown(_) => {
+                // TODO: parse `first` as options, then take the algorithm
+                // from `rest.trim_start()`
+                debug!(field = ?first, "Invalid options or algorithm");
+                return None;
+            }
+            algorithm => (algorithm, rest),
         };
 
-        // TODO: support options before key type
-        let algorithm = PublicKeyAlgorithm::typed(alg);
+        let mut parts = rest.split_whitespace();
         let Some(key_data) = parts.next() else {
             debug!("missing key data");
             return None;
